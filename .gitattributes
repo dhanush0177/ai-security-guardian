@@ -1,0 +1,10 @@
+# Normalize line endings for all text files to LF in the repository
+* text=auto eol=lf
+
+# Explicitly declare binary files to prevent corruption
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg text
