@@ -198,7 +198,40 @@ def run_attack_lab_suite_endpoint():
 @app.post("/api/attack-lab/scenario/{scenario_id}", response_model=ScenarioResult)
 def run_attack_lab_scenario_endpoint(scenario_id: str):
     try:
-        return run_attack_lab_scenario(scenario_id)
+        result = run_attack_lab_scenario(scenario_id)
+
+        decision = result.actual_defense.upper()
+        if decision in ["BLOCK", "DETECT"]:
+            event_status = "BLOCKED"
+        elif decision == "REVIEW":
+            event_status = "REVIEW"
+        elif decision in ["REJECT", "REJECTED"]:
+            event_status = "REJECTED"
+        else:
+            event_status = "ALLOWED"
+
+        event_store.log_event(
+            event_type="attack_lab_test",
+            source="attack_lab",
+            action=f"Ran scenario: {result.name}",
+            risk_level=result.risk_level,
+            score=result.score,
+            status=event_status,
+            reason=(
+                f"Test result: {result.status}. "
+                f"Expected: {result.expected_defense}; "
+                f"actual: {result.actual_defense}. "
+                f"{result.explanation}"
+            ),
+            metadata={
+                "scenario_id": result.id,
+                "scenario_status": result.status,
+                "expected_defense": result.expected_defense,
+                "actual_defense": result.actual_defense,
+            },
+        )
+
+        return result
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
     except Exception:

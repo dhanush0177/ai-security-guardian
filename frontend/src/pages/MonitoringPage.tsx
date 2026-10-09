@@ -31,6 +31,7 @@ export const MonitoringPage: React.FC = () => {
   const [events, setEvents] = useState<SecurityEvent[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<SecurityEvent | null>(null);
 
   // Filters
@@ -44,25 +45,38 @@ export const MonitoringPage: React.FC = () => {
 
   const fetchTelemetryData = async () => {
     setIsLoading(true);
+    setRefreshMessage(null);
+
     try {
       const apiHost = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-      
-      // Fetch Stats
-      const statsRes = await fetch(`${apiHost}/api/security/stats`);
-      if (statsRes.ok) {
-        const statsData = await statsRes.json();
-        setStats(statsData);
+
+      const [statsRes, eventsRes] = await Promise.all([
+        fetch(`${apiHost}/api/security/stats`),
+        fetch(
+          `${apiHost}/api/security/events${
+            statusFilter !== 'ALL' ? `?status=${statusFilter}` : ''
+          }`
+        ),
+      ]);
+
+      if (!statsRes.ok || !eventsRes.ok) {
+        throw new Error('Telemetry API request failed.');
       }
 
-      // Fetch Events
-      const statusParam = statusFilter !== 'ALL' ? `?status=${statusFilter}` : '';
-      const eventsRes = await fetch(`${apiHost}/api/security/events${statusParam}`);
-      if (eventsRes.ok) {
-        const eventsData = await eventsRes.json();
-        setEvents(eventsData);
-      }
+      const [statsData, eventsData] = await Promise.all([
+        statsRes.json(),
+        eventsRes.json(),
+      ]);
+
+      setStats(statsData);
+      setEvents(eventsData);
+      setRefreshMessage(
+        `Telemetry refreshed successfully at ${new Date().toLocaleTimeString()}.`
+      );
     } catch {
-      // Handle connection offline gracefully
+      setRefreshMessage(
+        'Refresh failed. Check your connection to the security API and try again.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -131,9 +145,25 @@ export const MonitoringPage: React.FC = () => {
             Live telemetry, rule execution audit log, and server-side decision stream.
           </p>
         </div>
-        <button className="btn btn-secondary" onClick={fetchTelemetryData} disabled={isLoading}>
-          <RefreshCw size={14} className={isLoading ? 'spin' : ''} /> Refresh Telemetry
-        </button>
+
+        <div>
+          <button className="btn btn-secondary" onClick={fetchTelemetryData} disabled={isLoading}>
+            <RefreshCw size={14} className={isLoading ? 'spin' : ''} /> Refresh Telemetry
+          </button>
+          {refreshMessage && (
+            <p
+              style={{
+                marginTop: '0.5rem',
+                fontSize: '0.8rem',
+                color: refreshMessage.startsWith('Refresh failed') ? '#ef4444' : '#22c55e',
+                textAlign: 'right',
+              }}
+            >
+              {refreshMessage}
+            </p>
+          )}
+        </div>
+
       </div>
 
       {/* System Status Banner */}
