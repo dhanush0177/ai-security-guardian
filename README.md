@@ -131,18 +131,33 @@ python backend/tests/verify_endpoints.py
 
 ---
 
-## 🌐 Deployment Preparation
+## 🌐 Deployment & Live Demo
 
-### Frontend Deployment (Vercel / Netlify / Render Static Site)
-* **Build Command:** `npm run build`
-* **Output Directory:** `dist`
-* **Environment Variable:** `VITE_API_URL=https://your-backend-api.onrender.com`
+### Live Application
 
-### Backend Deployment (Render / Railway / Fly.io / HuggingFace Spaces)
-* **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
-* **Python Version:** `3.13`
-* **Dependencies:** Defined in `backend/requirements.txt`
+- **Frontend:** https://ai-security-guardian.vercel.app/
+- **Backend API:** https://ai-security-guardian-api.onrender.com/
+- **Interactive API Documentation:** https://ai-security-guardian-api.onrender.com/docs
 
+The frontend is deployed on Vercel, and the backend API is hosted on Render. The frontend communicates with the backend to perform security analysis and enforce server-side permission decisions.
+
+*Note: The backend may take some time to respond after periods of inactivity.*
+
+### Frontend Deployment (Vercel)
+
+- **Build Command:** `npm run build`
+- **Output Directory:** `dist`
+- **Environment Variable:** `VITE_API_URL=https://ai-security-guardian-api.onrender.com`
+
+### Backend Deployment (Render)
+
+- **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- **Python Version:** `3.13`
+- **Dependencies:** Defined in `backend/requirements.txt`
+
+### Local Development
+
+Follow the Quick Start & Local Setup instructions above to run the frontend and backend locally.
 ---
 
 ## 🎬 Hackathon Judge Demo Walkthrough (9 Steps)
