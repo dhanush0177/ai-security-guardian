@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field
 from .event_logger import event_store
 from .simulated_tools import execute_simulated_tool
 
+# Maximum number of approval records retained in memory.
+DEFAULT_MAX_APPROVALS = 500
+
+
+class ApprovalCapacityError(Exception):
+    """Raised when no room remains for another approval record."""
+
+
 class ApprovalRecord(BaseModel):
     approval_id: str
     tool_name: str
@@ -25,6 +33,24 @@ class ApprovalManager:
     """
     def __init__(self):
         self._approvals: Dict[str, ApprovalRecord] = {}
+        self.max_approvals = DEFAULT_MAX_APPROVALS
+
+    def _evict_resolved_if_full(self) -> None:
+        """Make room for one new record without ever deleting pending approvals."""
+        if len(self._approvals) < self.max_approvals:
+            return
+
+        # Dicts preserve insertion order, so resolved records are considered oldest-first.
+        for approval_id, record in list(self._approvals.items()):
+            if record.status != "PENDING":
+                del self._approvals[approval_id]
+                return
+
+        # Every stored record is pending; preserve them and refuse the new approval.
+        raise ApprovalCapacityError(
+            "Approval capacity is full. Resolve pending approvals before creating another."
+        )
+
 
     def create_approval(
         self,
@@ -47,6 +73,7 @@ class ApprovalManager:
             created_at=datetime.now(timezone.utc).isoformat(),
             event_id=event_id
         )
+        self._evict_resolved_if_full()
         self._approvals[approval_id] = record
         return record
 

@@ -1,5 +1,6 @@
+import json
 from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from .risk_engine import RiskLevel
 from .event_logger import event_store, SecurityEvent
 
@@ -72,11 +73,38 @@ TOOL_REGISTRY: Dict[str, ToolDefinition] = {
     )
 }
 
+# Input bounds for ToolRequest. These values are written into the in-memory
+# audit log, so they must be bounded. Parameters are measured as compact JSON
+# length in characters (not UTF-8 bytes) so a maximum-length agent task in any
+# script (<= 2048 characters) can never exceed the limit.
+MAX_TOOL_NAME_LENGTH = 64
+MAX_SOURCE_AGENT_LENGTH = 64
+MAX_USER_ROLE_LENGTH = 32
+MAX_PARAMETERS_CHARS = 4096
+
 class ToolRequest(BaseModel):
-    tool_name: str
+    tool_name: str = Field(..., max_length=MAX_TOOL_NAME_LENGTH)
     parameters: Dict[str, Any] = {}
-    source_agent: str = "secure_agent"
-    user_role: str = "operator"
+    source_agent: str = Field("secure_agent", max_length=MAX_SOURCE_AGENT_LENGTH)
+    user_role: str = Field("operator", max_length=MAX_USER_ROLE_LENGTH)
+
+    @field_validator("parameters")
+    @classmethod
+    def _limit_parameters_size(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        # Stream-encode and stop as soon as the limit is exceeded, so validating
+        # a huge payload costs O(limit) instead of building a second huge string.
+        encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=False)
+        total = 0
+        try:
+            for chunk in encoder.iterencode(value):
+                total += len(chunk)
+                if total > MAX_PARAMETERS_CHARS:
+                    raise ValueError(
+                        f"parameters must serialize to at most {MAX_PARAMETERS_CHARS} characters of JSON."
+                    )
+        except (TypeError, RecursionError):
+            raise ValueError("parameters must be JSON-serializable and not excessively nested.")
+        return value
 
 class ToolResponse(BaseModel):
     tool_name: str
@@ -89,6 +117,12 @@ class ToolResponse(BaseModel):
     is_simulated: bool
     requires_human_approval: bool
 
+def _display_name(name: str) -> str:
+    """Bound a caller-supplied tool name before it is written into events or responses."""
+    if len(name) <= MAX_TOOL_NAME_LENGTH:
+        return name
+    return name[:MAX_TOOL_NAME_LENGTH] + "..."
+
 class PermissionGateway:
     """
     Deterministic Server-Side Gateway.
@@ -99,24 +133,25 @@ class PermissionGateway:
         
         # 1. Unknown Tool Check
         if tool_name not in TOOL_REGISTRY:
+            shown_name = _display_name(tool_name)
             event = event_store.log_event(
                 event_type="tool_request",
                 source=request.source_agent,
-                action=f"Request unregistered tool: '{tool_name}'",
+                action=f"Request unregistered tool: '{shown_name}'",
                 risk_level=RiskLevel.CRITICAL.value,
                 score=100,
                 status="BLOCKED",
-                reason=f"SECURITY VIOLATION: Tool '{tool_name}' is not registered in the Permission Gateway.",
-                metadata={"tool_name": tool_name, "parameters": request.parameters}
+                reason=f"SECURITY VIOLATION: Tool '{shown_name}' is not registered in the Permission Gateway.",
+                metadata={"tool_name": shown_name, "parameters": request.parameters}
             )
             return ToolResponse(
-                tool_name=tool_name,
+                tool_name=shown_name,
                 decision="BLOCK",
                 status="BLOCKED",
                 event_id=event.event_id,
                 risk_level=RiskLevel.CRITICAL.value,
                 score=100,
-                reason=f"SECURITY VIOLATION: Tool '{tool_name}' is not registered.",
+                reason=f"SECURITY VIOLATION: Tool '{shown_name}' is not registered.",
                 is_simulated=False,
                 requires_human_approval=False
             )

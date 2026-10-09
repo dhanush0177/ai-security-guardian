@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, HTTPException, Query, status, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
@@ -10,7 +12,7 @@ from security_engine.prompt_analyzer import analyze_prompt
 from security_engine.permission_gateway import permission_gateway, ToolRequest, ToolResponse
 from security_engine.event_logger import event_store, SecurityEvent
 from security_engine.agent_service import secure_agent_service, AgentTaskResponse
-from security_engine.approval_manager import approval_manager, ApprovalRecord
+from security_engine.approval_manager import approval_manager, ApprovalRecord, ApprovalCapacityError
 from security_engine.attack_lab import run_all_attack_lab_scenarios, run_attack_lab_scenario, AttackLabSuiteResult, ScenarioResult
 from security_engine.report_generator import generate_security_report, SecurityReport
 
@@ -19,6 +21,21 @@ app = FastAPI(
     description="Deterministic Security Rule Engine & Permission Gateway for AI Systems",
     version="1.0.0"
 )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    safe_errors = [
+        {
+            "type": error["type"],
+            "loc": error["loc"],
+            "msg": error["msg"],
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": safe_errors},
+    )
 
 # Enable CORS for local development frontend
 app.add_middleware(
@@ -149,6 +166,11 @@ def agent_task_endpoint(payload: AgentTaskRequest):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Task description cannot be empty.")
     try:
         return secure_agent_service.execute_task(payload.task)
+    except ApprovalCapacityError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Approval capacity is full. Resolve pending approvals before creating another."
+        )
     except ValueError as ve:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     except Exception:
@@ -263,14 +285,38 @@ def security_approval_endpoint(payload: ApprovalRequest):
     if not event:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Security event '{payload.event_id}' not found.")
     
-    updated_event = event_store.update_event_status(
-        event_id=payload.event_id,
-        new_status=decision_clean,
-        reason_update=f"Human Operator Decision: {decision_clean}"
+    # Decisions must go through ApprovalManager so the audit log can never
+    # diverge from approval state. Only events awaiting human review that have
+    # a linked PENDING approval can be decided; everything else is a conflict.
+    if event.status != "REVIEW":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Security event '{payload.event_id}' is {event.status} and cannot be approved or rejected."
+        )
+
+    pending = next(
+        (a for a in approval_manager.get_pending_approvals() if a.event_id == payload.event_id),
+        None
     )
+    if pending is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"No pending approval is linked to security event '{payload.event_id}'."
+        )
+
+    try:
+        if decision_clean == "APPROVED":
+            approval_manager.approve_request(pending.approval_id)
+        else:
+            approval_manager.reject_request(pending.approval_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(ve))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An error occurred while processing the approval decision.")
+
     return {
         "status": "success",
         "event_id": payload.event_id,
         "new_status": decision_clean,
-        "event": updated_event
+        "event": event_store.get_event_by_id(payload.event_id)
     }
